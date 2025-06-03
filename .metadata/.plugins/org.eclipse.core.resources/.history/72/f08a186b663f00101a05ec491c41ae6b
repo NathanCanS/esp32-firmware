@@ -1,0 +1,23 @@
+// Librerias
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <sys/_intsup.h>
+#include <sys/unistd.h>
+#include "driver/i2c.h"
+#include "driver/mcpwm_prelude.h"
+#include "driver/uart.h"
+#include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_err.h"
+#include "esp_timer.h"
+#include "driver/pulse_cnt.h"
+
+void app_main(void)
+{
+    while (true) {
+        read_line_sensors();
+        usleep(10000);
+    }
+}

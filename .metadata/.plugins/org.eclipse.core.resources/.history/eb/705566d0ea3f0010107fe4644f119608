@@ -1,0 +1,301 @@
+//Control de motores por PWM
+
+// Librerias
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <sys/_intsup.h>
+#include <sys/unistd.h>
+#include "driver/i2c.h"
+#include "driver/mcpwm_prelude.h"
+#include "driver/uart.h"
+#include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_err.h"
+#include "esp_timer.h"
+#include "driver/pulse_cnt.h"
+#include "driver/ledc.h"
+
+
+
+// Sintonia
+#define vd 0.15f
+
+#define k1 0.18f
+#define k2 2.25f
+#define k3 1.0f
+#define k4 1.5f
+#define kp 0.12f
+#define kv 0.015f
+
+// Compensacion angulo alpha
+#define calpha  -0.4f
+
+//Parametros
+#define Ts      0.01f
+#define ppr     12.0f
+#define Ra      3.0f
+#define NR      44.0f
+#define R       0.034f
+#define km      0.0008f
+#define b       0.0965f
+#define c1 0.995f
+
+// Conversiones
+#define deg_2_rad          0.0174533 
+#define rad_2_deg          57.29578
+#define accel_div_factor   16384.0
+#define gyro_div_factor    131.0
+#define accel_factor       0.0000610352
+#define gyro_factor        0.0076336
+#define pi_     3.141593f
+#define pi_s2   1.570796f
+
+// Constantes para calculos de control
+#define c2                 (1.0f - c1)                    // 0.005f
+#define iTs                (1.0f/Ts)                      // 100.0f
+#define esc                (pi_/(2.0f*ppr*NR))           // 0.003581f
+#define escs               (8191.0f/uM)                    // 24.171f
+#define Rasnkm             (Ra/(NR*km))                   // 85227.27f
+#define nkm                (NR*km)                        // 0.0352f
+#define v2tauM             (2.0f*tauM)                    // 0.6f
+#define mv                 (255.0f/(2.0f*omegaM*R))      // 234.007f
+#define mtheta             (255.0f/(2.0f*0.3f))          // 425.0f
+#define malpha             (255.0f/(2.0f*alphaM))        // 91.071f
+#define momega             (255.0f/(2.0f*omegaM))        // 7.968f
+#define mu                 (255.0f/(2.0f*uM))            // 12.085f
+#define deg_2_rad_gyro     (deg_2_rad * gyro_factor)     // 0.000133f
+#define accel_pi_s2        (accel_factor * pi_s2)        // 0.0000958f
+#define pwm_scale          (20000.0f / 255.0f)           // 78.431f
+#define two_b              (2.0f * b)                     // 0.193f
+#define R_over_two_b       (R / two_b)                    // 0.176f
+#define two_b_over_R       (two_b / R)                    // 5.676f
+
+// Angulos maximos
+#define tauM    0.3f
+#define alphaM  1.4f
+#define omegaM  16.0f
+
+// Voltajes maximos
+#define uM      10.55f
+#define uNM     10.00f
+
+// Pines ESP32-MPU6050
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+//Pines ESP32 - Encoders
+#define ENC_R_A 18
+#define ENC_R_B 19
+#define ENC_L_A 4
+#define ENC_L_B 5
+
+// Registros MPU6050
+#define MPU6050_ADDR    0x68
+#define PWR_MGMT_1      0x6B
+#define CONFIG_R        0x1A
+#define GYRO_CONFIG     0x1B
+#define ACCEL_CONFIG    0x1C
+#define ACCEL_XOUT_H    0x3B
+#define ACCEL_XOUT_L    0x3C
+#define GYRO_YOUT_H     0x45
+#define GYRO_YOUT_L     0x46
+
+// Constantes para encoders
+#define PCNT_H_LIM 32767
+#define PCNT_L_LIM -32768
+#define ENCODER_OVERFLOW_THRESHOLD 16383
+#define ENCODER_RANGE 65536
+
+// Configuracion de timer para control de motores DC por PWM
+#define LEDC_TIMER              LEDC_TIMER_0
+#define LEDC_MODE               LEDC_LOW_SPEED_MODE
+#define LEDC_DUTY_RES           LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
+//#define LEDC_DUTY               (4096) // Set duty to 50%. (2 ** 13) * 50% = 4096
+#define LEDC_FREQUENCY          (1000) // Frecuencia en Hz
+//#define MOTOR_MAX_DUTY          (8191)  // Maximum duty cycle (2^13 - 1)
+//#define MOTOR_MIN_DUTY          (0)     // Minimum duty cycle
+//Canales
+#define LEDC_CHANNEL_R           LEDC_CHANNEL_0
+#define LEDC_CHANNEL_L           LEDC_CHANNEL_1
+// Salidas
+// Motor A
+#define PWM_R_PIN 13 // output
+#define MOTOR_R_POS 12 // direccion adelante
+#define MOTOR_R_NEG 14 // direccion atras
+// Motor B
+#define PWM_L_PIN 25 // output
+#define MOTOR_L_POS 26 // direccion adelante
+#define MOTOR_L_NEG 27 // direccion atras
+
+
+// Parametros I2C
+#define I2C_MASTER_NUM  I2C_NUM_0
+#define I2C_FREQ_HZ     400000
+#define I2C_TIMEOUT_MS  1000
+
+// Periodo de muestreo
+#define TIMER_PERIOD_US 10000
+
+//static const char *TAG = "i2c-simple-example";
+
+// Variables para guardar datos del MPU6050
+int16_t Ax, Gy;
+uint8_t A_data_x[14];
+uint8_t G_data_y[14];
+
+// Variables de control del angulo para balanceo
+float Xa = 0.0f, Yg = 0.0f, alpha = 0.0f;
+float accelx = 0.15f, angulox = 0.15f, angulox_1 = 0.0f;
+
+// tiempo
+float t = 0.0f;
+
+// variables para control de velocidad
+float omegar = 0.0f, omegal = 0.0f;
+
+// control de ruedas
+float ur = 0.0f, ul = 0.0f;
+int8_t uWr,uWl;
+
+// Variables seguidor de linea
+float Sr,Sl;
+
+// variables de angulos vertical y horizontal, velicidad, par
+float v = 0.0f, alpha_1 = 0.0f, theta = 0.0f, thetad = -0.03f, thetatil = 0.0f, taua = 0.0f, u = 0.0f;
+float alphap = 0.0f, vtil = 0.0f, thetap = 0.0f, taur = 0.0f, taul = 0.0f;
+float intvtil = 0.0f;
+
+
+// Variables para motores
+int16_t posr = 0, posl = 0;        // Posiciones acumuladas
+int16_t incr = 0, incl = 0;        // Incrementos de encoders
+int16_t last_count_r = 0, last_count_l = 0;
+
+// Variables para componentes del ADC
+//static bool uart_working = true;
+adc_oneshot_unit_handle_t adc1_handle;
+
+// Contador de pulsos del encoder
+pcnt_unit_handle_t pcnt_unit_r = NULL;
+pcnt_unit_handle_t pcnt_unit_l = NULL;
+
+// Inicializacion del PWM
+static void ledc_init(void)
+{
+    // Configuracion timer
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode       = LEDC_MODE,
+        .duty_resolution  = LEDC_DUTY_RES,
+        .timer_num        = LEDC_TIMER,
+        .freq_hz          = LEDC_FREQUENCY,
+        .clk_cfg          = LEDC_AUTO_CLK
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
+
+    // Configuracion canal R
+    ledc_channel_config_t ledc_channel_r = {
+        .speed_mode     = LEDC_MODE,
+        .channel        = LEDC_CHANNEL_R,
+        .timer_sel      = LEDC_TIMER,
+        .intr_type      = LEDC_INTR_DISABLE,
+        .gpio_num       = PWM_R_PIN, // output
+        .duty           = 0, // duty = 0 0%
+        .hpoint         = 0
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_r));
+    
+    // Configuracion canal L
+    ledc_channel_config_t ledc_channel_l = {
+        .speed_mode     = LEDC_MODE,
+        .channel        = LEDC_CHANNEL_L,
+        .timer_sel      = LEDC_TIMER,
+        .intr_type      = LEDC_INTR_DISABLE,
+        .gpio_num       = PWM_L_PIN, // output
+        .duty           = 0, // duty = 0 0%
+        .hpoint         = 0
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_l));
+}
+
+// Inicializacion Salidas GPIO para direcciones
+static void gpio_init(void)
+{
+    // Configuracion GPIOs como salidas
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = ((1ULL << MOTOR_R_NEG) | 
+                        (1ULL << MOTOR_R_POS) | 
+                        (1ULL << MOTOR_L_NEG) | 
+                        (1ULL << MOTOR_L_POS)),
+        .pull_down_en = 0,
+        .pull_up_en = 0,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+    
+    // Inicializar GPIOs en 0
+    gpio_set_level(MOTOR_R_NEG, 0);
+    gpio_set_level(MOTOR_R_POS, 0);
+    gpio_set_level(MOTOR_L_NEG, 0);
+    gpio_set_level(MOTOR_L_POS, 0);
+}
+
+
+void app_main(void){
+	
+	ledc_init();
+	gpio_init();
+	
+	while (1) {
+		
+		// Control motor izquierdo
+            ul = taul * Rasnkm + nkm * omegal;
+            if (ul >= uNM)
+                ul = uNM;
+            if (ul <= (-uNM))
+                ul = -uNM;
+            
+            // Escalamiento motor izquierdo
+            uWl = escs * fabsf(ul);
+            
+            
+            if (ul < 0.0f) {
+                gpio_set_level(MOTOR_L_POS, 1);
+                gpio_set_level(MOTOR_L_NEG, 0);
+            } else {
+                gpio_set_level(MOTOR_L_POS, 0);
+                gpio_set_level(MOTOR_L_NEG, 1);
+            }
+            
+            // Control motor derecho
+            ur = taur * Rasnkm + nkm * omegar;
+            if (ur >= uNM)
+                ur = uNM;
+            if (ur <= (-uNM))
+                ur = -uNM;
+            
+            // Escalamiento motor derecho
+            uWr = escs * fabsf(ur);
+            
+            if (ur < 0.0f) {
+                gpio_set_level(MOTOR_R_POS, 1);
+                gpio_set_level(MOTOR_R_NEG, 0);
+            } else {
+                gpio_set_level(MOTOR_R_POS, 0);
+                gpio_set_level(MOTOR_R_NEG, 1);
+            }
+		
+		//Escritura de PWM
+		// Set duty to 50%
+	    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_R, uWr));
+	    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_L, uWl));
+	    
+	    // Update duty to apply the new value
+	    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_R));
+	    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_L));
+    //usleep(10000);
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+}

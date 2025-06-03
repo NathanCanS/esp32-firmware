@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+C:/codigoESP3/PosicionEncoders/build/CMakeFiles/bootloader
+C:/codigoESP3/PosicionEncoders/build/CMakeFiles/bootloader.rule
+C:/codigoESP3/PosicionEncoders/build/CMakeFiles/bootloader-complete.rule
+C:/codigoESP3/PosicionEncoders/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+C:/codigoESP3/PosicionEncoders/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+C:/codigoESP3/PosicionEncoders/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+C:/codigoESP3/PosicionEncoders/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+C:/codigoESP3/PosicionEncoders/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+C:/codigoESP3/PosicionEncoders/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+C:/codigoESP3/PosicionEncoders/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
